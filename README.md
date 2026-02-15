@@ -1,4 +1,4 @@
-# URL Shortener (Go + Postgres)
+# URL Shortener (Go + Postgres/Redis)
 
 A simple, production-structured URL shortener with clear layers:
 
@@ -6,10 +6,10 @@ A simple, production-structured URL shortener with clear layers:
 - `internal/config`: environment/config loading
 - `internal/app`: app wiring and lifecycle management
 - `internal/repository/postgres`: database repository
+- `internal/repository/redis`: redis repository
 - `internal/service`: business logic
 - `internal/httpapi`: HTTP handlers
 - `internal/middleware`: HTTP middleware
-- `internal/platform/db`: schema bootstrap
 
 ## Endpoints
 
@@ -22,39 +22,16 @@ A simple, production-structured URL shortener with clear layers:
 - Go 1.22+
 - Docker
 
-## 1) Start Postgres container
-
-```bash
-docker run --name urlshortener-postgres \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=urlshortener \
-  -p 5432:5432 \
-  -d postgres:16
+## 1) Add .env variables
 ```
-
-Verify container:
-
-```bash
-docker ps
-docker logs -f urlshortener-postgres
-```
-
-Stop and remove later:
-
-```bash
-docker stop urlshortener-postgres
-docker rm urlshortener-postgres
+DATABASE_URL='postgres://postgres:postgres@localhost:5432/urlshortener?sslmode=disable'
+REDIS_URL='localhost:6379'
 ```
 
 ## 2) Run app
 
 ```bash
-go mod tidy
-DATABASE_URL='postgres://postgres:postgres@localhost:5432/urlshortener?sslmode=disable' \
-BASE_URL='http://localhost:8080' \
-PORT='8080' \
-go run ./cmd/server
+make run
 ```
 
 ## 3) Quick test
