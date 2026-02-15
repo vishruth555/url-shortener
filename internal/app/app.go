@@ -13,84 +13,119 @@ import (
 	"urlshortener/internal/repository/redis"
 	"urlshortener/internal/service"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	r "github.com/redis/go-redis/v9"
+
+	"github.com/gin-gonic/gin"
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
-	//repo, err := getPostgresRepo(ctx, cfg)
-	repo, err := getRedisRepo(ctx, cfg)
+	// Initialize repositories
+	// postgresRepo, err := getPostgresRepo(ctx, cfg)
+	// if err != nil {
+	// 	return err
+	// }
+
+	redisRepo, err := getRedisRepo(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("Error connecting to Redis: %w", err)
+		return err
 	}
 
-	shortener := service.NewShortener(repo, cfg.BaseURL, cfg.CodeLength, cfg.MaxGenerateRetries)
+	// Initialize service
+	shortener := service.NewShortener(
+		redisRepo,
+		cfg.BaseURL,
+		cfg.CodeLength,
+		cfg.MaxGenerateRetries,
+	)
+
+	// Initialize API
 	api := httpapi.NewAPI(shortener)
 
-	mux := http.NewServeMux()
-	api.RegisterRoutes(mux)
+	// Setup Gin
+	router := gin.New()
 
+	// Attach middleware
+	router.Use(
+		gin.Recovery(),
+		middleware.GinLogging(), // we'll define this below
+	)
+
+	// Register routes
+	api.RegisterRoutes(router)
+
+	// Create HTTP server (still needed for graceful shutdown + timeouts)
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      middleware.Logging(mux),
+		Handler:      router,
 		ReadTimeout:  cfg.ServerReadTimeout,
 		WriteTimeout: cfg.ServerWriteTimeout,
 		IdleTimeout:  cfg.ServerIdleTimeout,
 	}
 
 	errCh := make(chan error, 1)
+
 	go func() {
 		log.Printf("server listening on %s", server.Addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+
+		if err := server.ListenAndServe(); err != nil &&
+			err != http.ErrServerClosed {
+
 			errCh <- err
 			return
 		}
+
 		errCh <- nil
 	}()
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer shutdownCancel()
+		log.Println("shutdown signal received")
+
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			cfg.ShutdownTimeout,
+		)
+		defer cancel()
+
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown server: %w", err)
 		}
+
 		<-errCh
 		return nil
+
 	case err := <-errCh:
 		return err
 	}
 }
 
 func getRedisRepo(ctx context.Context, cfg config.Config) (service.URLRepository, error) {
-	rdb := r.NewClient(&r.Options{Addr: cfg.RedisURL})
-	err := rdb.Ping(ctx).Err()
-	if err != nil {
-		panic(err)
+	rdb := r.NewClient(&r.Options{
+		Addr: cfg.RedisURL,
+	})
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("connect redis: %w", err)
 	}
-	defer rdb.Close()
+
 	fmt.Println("Connected to Redis!")
 
 	return redis.NewCache(rdb), nil
-
 }
 
 func getPostgresRepo(ctx context.Context, cfg config.Config) (service.URLRepository, error) {
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	db, err := postgres.NewGormDB(cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect database: %w", err)
 	}
-	defer pool.Close()
 
-	dbCtx, cancel := context.WithTimeout(ctx, cfg.DBTimeout)
-	defer cancel()
-	if err := pool.Ping(dbCtx); err != nil {
-		return nil, fmt.Errorf("ping database: %w", err)
-	}
-
-	if err := postgres.RunSchema(dbCtx, pool, "db/schema.sql"); err != nil {
-		return nil, fmt.Errorf("run schema: %w", err)
-	}
 	fmt.Println("Connected to Postgres")
-	return postgres.NewURLRepository(pool), nil
+
+	repo := postgres.NewURLRepository(db)
+
+	if err := repo.PrintAll(ctx); err != nil {
+		return nil, err
+	}
+
+	return repo, nil
 }

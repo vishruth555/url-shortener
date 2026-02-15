@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func Logging(next http.Handler) http.Handler {
@@ -12,4 +14,20 @@ func Logging(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Printf("method=%s path=%s duration=%s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+func GinLogging() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		c.Next()
+
+		log.Printf(
+			"%s %s %d %v",
+			c.Request.Method,
+			c.Request.URL.Path,
+			c.Writer.Status(),
+			time.Since(start),
+		)
+	}
 }

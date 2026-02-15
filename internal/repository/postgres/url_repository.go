@@ -3,53 +3,80 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 var ErrNotFound = errors.New("not found")
 
-func RunSchema(ctx context.Context, pool *pgxpool.Pool, schemaFilePath string) error {
-	schemaSQL, err := os.ReadFile(schemaFilePath)
-	if err != nil {
-		return err
-	}
-
-	_, err = pool.Exec(ctx, string(schemaSQL))
-	return err
-}
-
 type URLRepository struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
-func NewURLRepository(pool *pgxpool.Pool) *URLRepository {
-	return &URLRepository{pool: pool}
+func NewURLRepository(db *gorm.DB) *URLRepository {
+	return &URLRepository{db: db}
 }
 
 func (r *URLRepository) Create(ctx context.Context, code string, originalURL string) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO urls(code, original_url) VALUES($1, $2)`, code, originalURL)
-	return err
+	url := URL{
+		Code:        code,
+		OriginalURL: originalURL,
+		Hits:        0,
+	}
+
+	return r.db.WithContext(ctx).Create(&url).Error
 }
 
 func (r *URLRepository) GetOriginalByCode(ctx context.Context, code string) (string, error) {
-	const q = `
-		UPDATE urls
-		SET hits = hits + 1
-		WHERE code = $1
-		RETURNING original_url
-	`
+	var url URL
 
-	var originalURL string
-	err := r.pool.QueryRow(ctx, q, code).Scan(&originalURL)
-	if errors.Is(err, pgx.ErrNoRows) {
+	result := r.db.WithContext(ctx).
+		Where("code = ?", code).
+		First(&url)
+
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return "", ErrNotFound
 	}
+
+	if result.Error != nil {
+		return "", result.Error
+	}
+
+	// increment hits
+	err := r.db.WithContext(ctx).
+		Model(&URL{}).
+		Where("code = ?", code).
+		Update("hits", gorm.Expr("hits + 1")).Error
+
 	if err != nil {
 		return "", err
 	}
 
-	return originalURL, nil
+	return url.OriginalURL, nil
+}
+
+func (r *URLRepository) GetAll(ctx context.Context) ([]URL, error) {
+	var urls []URL
+
+	err := r.db.WithContext(ctx).
+		Find(&urls).Error
+
+	return urls, err
+}
+
+func (r *URLRepository) PrintAll(ctx context.Context) error {
+	urls, err := r.GetAll(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, u := range urls {
+		fmt.Printf("Code: %s\n", u.Code)
+		fmt.Printf("Original URL: %s\n", u.OriginalURL)
+		fmt.Printf("Hits: %d\n", u.Hits)
+		fmt.Println("------------")
+	}
+
+	return nil
 }
