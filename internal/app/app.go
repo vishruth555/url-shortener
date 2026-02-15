@@ -6,33 +6,46 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"urlshortener/internal/config"
 	"urlshortener/internal/httpapi"
 	"urlshortener/internal/middleware"
-	"urlshortener/internal/repository/postgres"
+	_ "urlshortener/internal/repository/postgres"
+	"urlshortener/internal/repository/redis"
 	"urlshortener/internal/service"
+
+	_ "github.com/jackc/pgx/v5/pgxpool"
+	r "github.com/redis/go-redis/v9"
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	// pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	// if err != nil {
+	// 	return fmt.Errorf("connect database: %w", err)
+	// }
+	// defer pool.Close()
+
+	// dbCtx, cancel := context.WithTimeout(ctx, cfg.DBTimeout)
+	// defer cancel()
+	// if err := pool.Ping(dbCtx); err != nil {
+	// 	return fmt.Errorf("ping database: %w", err)
+	// }
+
+	// if err := postgres.RunSchema(dbCtx, pool, "db/schema.sql"); err != nil {
+	// 	return fmt.Errorf("run schema: %w", err)
+	// }
+	// fmt.Println("Connected to Postgres")
+	// repo := postgres.NewURLRepository(pool)
+
+	rdb := r.NewClient(&r.Options{Addr: cfg.RedisURL})
+	err := rdb.Ping(ctx).Err()
 	if err != nil {
-		return fmt.Errorf("connect database: %w", err)
+		panic(err)
 	}
-	defer pool.Close()
+	defer rdb.Close()
+	repo := redis.NewCache(rdb)
 
-	dbCtx, cancel := context.WithTimeout(ctx, cfg.DBTimeout)
-	defer cancel()
-	if err := pool.Ping(dbCtx); err != nil {
-		return fmt.Errorf("ping database: %w", err)
-	}
+	fmt.Println("Connected to Redis!")
 
-	if err := postgres.RunSchema(dbCtx, pool, "db/schema.sql"); err != nil {
-		return fmt.Errorf("run schema: %w", err)
-	}
-
-	repo := postgres.NewURLRepository(pool)
 	shortener := service.NewShortener(repo, cfg.BaseURL, cfg.CodeLength, cfg.MaxGenerateRetries)
 	api := httpapi.NewAPI(shortener)
 
